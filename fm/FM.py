@@ -8,6 +8,7 @@ import argparse
 from util import *
 from sklearn.metrics import *
 class FM(object):
+    # num_classes:2分类或者多分类，k：特征
     def __init__(self, num_classes, k, lr, batch_size, feature_length, reg_l1, reg_l2):
         self.num_classes = num_classes
         self.k = k
@@ -17,19 +18,29 @@ class FM(object):
         self.reg_l1 = reg_l1
         self.reg_l2 = reg_l2
 
+    # 数据集占位符，样本数据X(样本数量，特征个数），标签数据y(样本数量，分类个数)
     def add_input(self):
         self.X = tf.placeholder('float32', [None, self.p])
         self.y = tf.placeholder('float32', [None, self.num_classes])
         self.keep_prob = tf.placeholder('float32')
 
+    # 搭模型，激活函数
+    # y_out:(样本数量，分类个数）， y_out_prob激活函数输出后 (样本数量，分类个数） 元素值在0-1之间
     def inference(self):
+        # 纯线性部分。初始化权重w(特征个数，分类个数)。初始化w0(分类个数,)。
+        # w初始化为截断的正态分布随机数，w0初始化为0。
+        # X*w + w0 。  X(样本数量，特征个数）*  w(特征个数，分类个数) + w0(分类个数,) =>  （样本数量，分类个数）
         with tf.variable_scope('linear_layer'):
             w0 = tf.get_variable('w0', shape=[self.num_classes],
                                 initializer=tf.zeros_initializer())
             self.w = tf.get_variable('w', shape=[self.p, num_classes],
                                  initializer=tf.truncated_normal_initializer(mean=0,stddev=0.01))
             self.linear_terms = tf.add(tf.matmul(self.X, self.w), w0)
-
+        # 特征交叉部分。初始化v(特征个数，隐向量长度)
+        #  0.5 * mean_axis_1_keep_dims( (X*v)^2 - (X * v^2) ) 。
+        ##  0.5 * mean_axis_1_keep_dims( ( X(样本数量，特征个数） * v(特征个数，隐向量长度) )^2 - (X(样本数量，特征个数） * v(特征个数，隐向量长度)^2) ) 。
+        ##  0.5 * mean_axis_1_keep_dims( ( 样本数量，隐向量长度 )^2 - (X(样本数量，特征个数） * (特征个数，隐向量长度)) )
+        ##  0.5 * mean_axis_1_keep_dims( ( 样本数量，隐向量长度) )  => （样本数量，1）
         with tf.variable_scope('interaction_layer'):
             self.v = tf.get_variable('v', shape=[self.p, self.k],
                                 initializer=tf.truncated_normal_initializer(mean=0, stddev=0.01))
@@ -39,12 +50,16 @@ class FM(object):
                                                          tf.pow(tf.matmul(self.X, self.v), 2),
                                                          tf.matmul(self.X, tf.pow(self.v, 2))),
                                                      1, keep_dims=True))
+        # X*w + w0 + 0.5 * mean_axis_1_keep_dims( (X*v)^2 - (X * v^2) )
+        # (样本数量，分类个数）+ （样本数量，1） => (样本数量，分类个数）
         self.y_out = tf.add(self.linear_terms, self.interaction_terms)
         if self.num_classes == 2:
             self.y_out_prob = tf.nn.sigmoid(self.y_out)
         elif self.num_classes > 2:
             self.y_out_prob = tf.nn.softmax(self.y_out)
+    # 在模型输出和和真实值之间构建交叉熵函数，构建损失函数，损失函数是交叉熵函数输出的均值
     def add_loss(self):
+        # 交叉熵函数
         if self.num_classes == 2:
             cross_entropy = tf.nn.sigmoid_cross_entropy_with_logits(labels=self.y, logits=self.y_out)
         elif self.num_classes > 2:
@@ -52,14 +67,15 @@ class FM(object):
         mean_loss = tf.reduce_mean(cross_entropy)
         self.loss = mean_loss
         tf.summary.scalar('loss', self.loss)
-
+    # 计算预测精度:分别找到预测值y_out和实际值y每一行的最大值小标，比较是否相等[True, 。。。,False]，把比较结果转换成float[1.,...,0.]，然后计算均值
     def add_accuracy(self):
         # accuracy
         self.correct_prediction = tf.equal(tf.cast(tf.argmax(self.y_out,1), tf.float32), tf.cast(tf.argmax(self.y,1), tf.float32))
         self.accuracy = tf.reduce_mean(tf.cast(self.correct_prediction, tf.float32))
         # add summary to accuracy
         tf.summary.scalar('accuracy', self.accuracy)
-
+    # 训练：初始化步数、优化器、控制依赖、得到训练OP
+    # 注意，tensorlow中训练本身也是一个Operation
     def train(self):
         self.global_step = tf.Variable(0, trainable=False)
         optimizer = tf.train.FtrlOptimizer(self.lr, l1_regularization_strength=self.reg_l1,
@@ -68,6 +84,7 @@ class FM(object):
         with tf.control_dependencies(extra_update_ops):
             self.train_op = optimizer.minimize(self.loss, global_step=self.global_step)
 
+    # 初始化样本占位符，搭模型，设置损失函数OP，设置精度OP，训练OP
     def build_graph(self):
         self.add_input()
         self.inference()
@@ -84,15 +101,18 @@ def train_model(sess, model, epochs=100, print_every=50):
     # get number of batches
     num_batches = len(x_train) // batch_size + 1
 
+    # 跑epochs次
     for e in range(epochs):
         num_samples = 0
         losses = []
+        # 一次训练需要分num_batches批跑所有数据
         for ibatch in range(num_batches):
             # batch_size data
             batch_x, batch_y = next(batch_gen)
             batch_y = np.array(batch_y).astype(np.float32)
             actual_batch_size = len(batch_y)
             # create a feed dictionary for this batch
+            # 喂入该批次的数据
             feed_dict = {model.X: batch_x,
                          model.y: batch_y,
                          model.keep_prob:1.0}
