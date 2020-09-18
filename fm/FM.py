@@ -1,3 +1,4 @@
+# -*- coding: UTF-8 -*-
 import os
 import sys
 import tensorflow as tf
@@ -77,11 +78,13 @@ class FM(object):
     # 训练：初始化步数、优化器、控制依赖、得到训练OP
     # 注意，tensorlow中训练本身也是一个Operation
     def train(self):
+        # Variable变量更新以后加一
         self.global_step = tf.Variable(0, trainable=False)
         optimizer = tf.train.FtrlOptimizer(self.lr, l1_regularization_strength=self.reg_l1,
                                            l2_regularization_strength=self.reg_l2)
         extra_update_ops = tf.get_collection(tf.GraphKeys.UPDATE_OPS)
         with tf.control_dependencies(extra_update_ops):
+            # 更新Variable变量，分为两步计算梯度,应用梯度。每sess.run一次，会进行梯度下降的一个周期
             self.train_op = optimizer.minimize(self.loss, global_step=self.global_step)
 
     # 初始化样本占位符，搭模型，设置损失函数OP，设置精度OP，训练OP
@@ -92,6 +95,8 @@ class FM(object):
         self.add_accuracy()
         self.train()
 
+# 训练数据的时候跑epochs个周期，一个周期分小批喂入模型进行训练（求导更新参数），每训练print_every次打印一次结果保存一次模型
+# 注意epochs在此处并不等于训练次数，还跟分批有关系
 def train_model(sess, model, epochs=100, print_every=50):
     """training model"""
     # Merge all the summaries and write them out to train_logs
@@ -103,9 +108,11 @@ def train_model(sess, model, epochs=100, print_every=50):
 
     # 跑epochs次
     for e in range(epochs):
+        # 样本总数
         num_samples = 0
+        # 每一批的误差
         losses = []
-        # 一次训练需要分num_batches批跑所有数据
+        # 分num_batches批跑所有数据
         for ibatch in range(num_batches):
             # batch_size data
             batch_x, batch_y = next(batch_gen)
@@ -117,7 +124,7 @@ def train_model(sess, model, epochs=100, print_every=50):
                          model.y: batch_y,
                          model.keep_prob:1.0}
 
-
+            # 运行operations并计算tensor
             loss, accuracy,  summary, global_step, _ = sess.run([model.loss, model.accuracy,
                                                                  merged,model.global_step,
                                                                  model.train_op], feed_dict=feed_dict)
@@ -127,6 +134,8 @@ def train_model(sess, model, epochs=100, print_every=50):
             # Record summaries and train.csv-set accuracy
             train_writer.add_summary(summary, global_step=global_step)
             # print training loss and accuracy
+            # 总的迭代次数每print_every输出一次误差和精度
+            # 并保存训练检查点
             if global_step % print_every == 0:
                 logging.info("Iteration {0}: with minibatch training loss = {1} and accuracy of {2}"
                              .format(global_step, loss, accuracy))
@@ -135,6 +144,7 @@ def train_model(sess, model, epochs=100, print_every=50):
         total_loss = np.sum(losses)/num_samples
         print("Epoch {1}, Overall loss = {0:.3g}".format(total_loss, e+1))
 
+# 测试模型
 def test_model(sess, model, print_every = 50):
     """training model"""
     # get testing data, iterable
@@ -142,7 +152,7 @@ def test_model(sess, model, print_every = 50):
     all_clicks = []
     # get number of batches
     num_batches = len(y_test) // batch_size + 1
-
+    # 分批预测
     for ibatch in range(num_batches):
         # batch_size data
         batch_x, batch_y = next(test_batch_gen) 
@@ -151,13 +161,15 @@ def test_model(sess, model, print_every = 50):
         feed_dict = {model.X: batch_x,
                      model.keep_prob:1}
         # shape of [None,2]
+        # 测试数据输出训练后模型计算y_out_prob
+        # 会覆盖train_model的y_out_prob
         y_out_prob = sess.run([model.y_out_prob], feed_dict=feed_dict)
         y_out_prob = np.array(y_out_prob[0])
-
+        # 预测结果，用最大概率的索引表示
         batch_clicks = np.argmax(y_out_prob, axis=1)
-
+        # 实际结果，同样用最大索引表示
         batch_y = np.argmax(batch_y, axis=1)
-
+        #
         print(confusion_matrix(batch_y, batch_clicks))
         ibatch += 1
         if ibatch % print_every == 0:
@@ -195,6 +207,7 @@ def check_restore_parameters(sess, saver):
     else:
         logging.info("Initializing fresh parameters for the my Factorization Machine")
 
+#
 if __name__ == '__main__':
     '''launching TensorBoard: tensorboard --logdir=path/to/log-directory'''
     # get mode (train or test)
